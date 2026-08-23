@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kanbanbridge"
+version = "0.1.0"
+description = "Convert kanban board exports between Trello JSON and Markdown, strict by default"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "emily-m1996"}]
+
+[project.scripts]
+kanbanbridge = "kanbanbridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kanbanbridge*"]
