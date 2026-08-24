@@ -79,7 +79,10 @@ kanbanbridge messy-export.json board.md --lenient
 This reads the same JSON you get from Trello's "Export as JSON" board menu
 option: a top-level object with `name`, `lists` (each with `id`, `name`,
 `closed`), and `cards` (each with `name`, `desc`, `idList`, `closed`, an
-optional `due`, and an optional `labels` array). Writing back out produces a
+optional `due`, an optional `dueComplete` boolean, and an optional `labels`
+array). `dueComplete` is what a markdown `- [x]` card round-trips to and
+from, since Trello has no other board-level "done" flag outside checklists.
+Writing back out produces a
 minimal version of that same shape — enough for Trello to accept it as an
 import, though it doesn't attempt to reproduce every field Trello itself
 writes (board backgrounds, member assignments, activity, and so on aren't

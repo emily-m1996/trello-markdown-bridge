@@ -1,0 +1,133 @@
+import unittest
+
+from kanbanbridge.formats import read_markdown, read_trello, write_markdown, write_trello
+from kanbanbridge.model import Board, BoardList, Card
+
+# Fixture boards meant to stand in for real exports: a couple of lists, cards
+# with every field populated, an empty list, and some non-ASCII text to make
+# sure nothing is being silently transcoded along the way.
+FIXTURE_BOARDS = [
+    Board(
+        name="Solo Card",
+        lists=[BoardList(name="Todo", cards=[Card(title="Just a title")])],
+    ),
+    Board(
+        name="Home Renovation",
+        lists=[
+            BoardList(
+                name="Backlog",
+                cards=[
+                    Card(
+                        title="Get quotes for kitchen tile",
+                        description="Call the three places on the fridge list.\nAsk about lead time.",
+                        due="2026-03-01",
+                        labels=["research", "urgent"],
+                    ),
+                    Card(title="Pick a paint color", done=True),
+                ],
+            ),
+            BoardList(name="Doing", cards=[Card(title="Demo the bathroom", labels=["messy"])]),
+            BoardList(name="Done", cards=[]),
+        ],
+    ),
+    Board(
+        name="Café Menu Ideas — v2",
+        lists=[
+            BoardList(
+                name="Specials",
+                cards=[Card(title="Soupe à l'oignon", description="Needs gruyère, not cheddar.")],
+            )
+        ],
+    ),
+]
+
+
+class RoundTripTests(unittest.TestCase):
+    def test_trello_round_trip(self):
+        for board in FIXTURE_BOARDS:
+            with self.subTest(board=board.name):
+                restored = read_trello(write_trello(board))
+                self.assertEqual(restored, board)
+
+    def test_markdown_round_trip(self):
+        for board in FIXTURE_BOARDS:
+            with self.subTest(board=board.name):
+                restored = read_markdown(write_markdown(board))
+                self.assertEqual(restored, board)
+
+    def test_full_cycle_trello_to_markdown_and_back(self):
+        for board in FIXTURE_BOARDS:
+            with self.subTest(board=board.name):
+                via_trello = read_trello(write_trello(board))
+                via_markdown = read_markdown(write_markdown(via_trello))
+                self.assertEqual(via_markdown, board)
+
+
+class RawFixtureParsingTests(unittest.TestCase):
+    """Parse hand-written exports rather than ones this codebase produced itself,
+    so a schema drift between read_trello and write_trello wouldn't hide a bug."""
+
+    def test_parses_a_realistic_trello_export(self):
+        raw = {
+            "name": "Launch Plan",
+            "lists": [
+                {"id": "l1", "name": "To Do", "closed": False},
+                {"id": "l2", "name": "Archived List", "closed": True},
+            ],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Write announcement",
+                    "desc": "Draft in the shared doc first.",
+                    "idList": "l1",
+                    "closed": False,
+                    "due": "2026-02-10T00:00:00.000Z",
+                    "labels": [{"name": "writing", "color": "green"}],
+                },
+                {
+                    "id": "c2",
+                    "name": "Old task",
+                    "desc": "",
+                    "idList": "l2",
+                    "closed": True,
+                },
+            ],
+        }
+        board = read_trello(raw, lenient=True)
+        self.assertEqual(board.name, "Launch Plan")
+        self.assertEqual([lst.name for lst in board.lists], ["To Do"])
+        card = board.lists[0].cards[0]
+        self.assertEqual(card.title, "Write announcement")
+        self.assertEqual(card.description, "Draft in the shared doc first.")
+        self.assertEqual(card.due, "2026-02-10")
+        self.assertEqual(card.labels, ["writing"])
+
+    def test_parses_the_readme_example(self):
+        text = (
+            "# Board Name\n"
+            "\n"
+            "## List Name\n"
+            "\n"
+            "- [ ] Card title\n"
+            "  > Optional description, can span\n"
+            "  > multiple lines like this.\n"
+            "  - due: 2026-01-15\n"
+            "  - labels: bug, urgent\n"
+            "\n"
+            "- [x] A finished card\n"
+        )
+        board = read_markdown(text)
+        self.assertEqual(board.name, "Board Name")
+        self.assertEqual(len(board.lists), 1)
+        first, second = board.lists[0].cards
+        self.assertEqual(first.title, "Card title")
+        self.assertFalse(first.done)
+        self.assertEqual(first.description, "Optional description, can span\nmultiple lines like this.")
+        self.assertEqual(first.due, "2026-01-15")
+        self.assertEqual(first.labels, ["bug", "urgent"])
+        self.assertEqual(second.title, "A finished card")
+        self.assertTrue(second.done)
+
+
+if __name__ == "__main__":
+    unittest.main()

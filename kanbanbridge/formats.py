@@ -71,6 +71,7 @@ def read_trello(data, lenient=False):
         card = Card(
             title=title,
             description=raw_card.get("desc", "") or "",
+            done=bool(raw_card.get("dueComplete", False)),
             due=due,
             labels=labels,
         )
@@ -113,6 +114,7 @@ def write_trello(board):
                 "desc": card.description,
                 "idList": list_id,
                 "closed": False,
+                "dueComplete": card.done,
             }
             if card.due:
                 entry["due"] = f"{card.due}T00:00:00.000Z"
