@@ -1,7 +1,7 @@
 import unittest
 
 from kanbanbridge.formats import read_markdown, read_trello, write_markdown, write_trello
-from kanbanbridge.model import Board, BoardList, Card
+from kanbanbridge.model import Board, BoardList, Card, ChecklistItem
 
 # Fixture boards meant to stand in for real exports: a couple of lists, cards
 # with every field populated, an empty list, and some non-ASCII text to make
@@ -22,6 +22,11 @@ FIXTURE_BOARDS = [
                         description="Call the three places on the fridge list.\nAsk about lead time.",
                         due="2026-03-01",
                         labels=["research", "urgent"],
+                        checklist_items=[
+                            ChecklistItem(text="Call Ferguson Tile", done=True),
+                            ChecklistItem(text="Call Home Depot"),
+                            ChecklistItem(text="Call the place on 5th"),
+                        ],
                     ),
                     Card(title="Pick a paint color", done=True),
                 ],
@@ -92,6 +97,25 @@ class RawFixtureParsingTests(unittest.TestCase):
                     "closed": True,
                 },
             ],
+            "checklists": [
+                {
+                    "id": "cl1",
+                    "idCard": "c1",
+                    "name": "Steps",
+                    "checkItems": [
+                        {"id": "ci1", "name": "Draft copy", "state": "complete"},
+                        {"id": "ci2", "name": "Get sign-off", "state": "incomplete"},
+                    ],
+                },
+                {
+                    "id": "cl2",
+                    "idCard": "c1",
+                    "name": "Distribution",
+                    "checkItems": [
+                        {"id": "ci3", "name": "Post to blog", "state": "incomplete"},
+                    ],
+                },
+            ],
         }
         board = read_trello(raw, lenient=True)
         self.assertEqual(board.name, "Launch Plan")
@@ -101,6 +125,15 @@ class RawFixtureParsingTests(unittest.TestCase):
         self.assertEqual(card.description, "Draft in the shared doc first.")
         self.assertEqual(card.due, "2026-02-10")
         self.assertEqual(card.labels, ["writing"])
+        # both named checklists on the card flatten into one ordered sub-task list
+        self.assertEqual(
+            card.checklist_items,
+            [
+                ChecklistItem(text="Draft copy", done=True),
+                ChecklistItem(text="Get sign-off", done=False),
+                ChecklistItem(text="Post to blog", done=False),
+            ],
+        )
 
     def test_parses_the_readme_example(self):
         text = (
@@ -111,6 +144,8 @@ class RawFixtureParsingTests(unittest.TestCase):
             "- [ ] Card title\n"
             "  > Optional description, can span\n"
             "  > multiple lines like this.\n"
+            "  - [x] A finished sub-task\n"
+            "  - [ ] An open sub-task\n"
             "  - due: 2026-01-15\n"
             "  - labels: bug, urgent\n"
             "\n"
@@ -123,6 +158,10 @@ class RawFixtureParsingTests(unittest.TestCase):
         self.assertEqual(first.title, "Card title")
         self.assertFalse(first.done)
         self.assertEqual(first.description, "Optional description, can span\nmultiple lines like this.")
+        self.assertEqual(
+            first.checklist_items,
+            [ChecklistItem(text="A finished sub-task", done=True), ChecklistItem(text="An open sub-task")],
+        )
         self.assertEqual(first.due, "2026-01-15")
         self.assertEqual(first.labels, ["bug", "urgent"])
         self.assertEqual(second.title, "A finished card")

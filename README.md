@@ -61,6 +61,8 @@ kanbanbridge messy-export.json board.md --lenient
 - [ ] Card title
   > Optional description, can span
   > multiple lines like this.
+  - [ ] A checklist sub-task
+  - [x] A finished checklist sub-task
   - due: 2026-01-15
   - labels: bug, urgent
 
@@ -71,6 +73,10 @@ kanbanbridge messy-export.json board.md --lenient
 - One `##` heading per list, in order.
 - Each card is a `- [ ]` (open) or `- [x] ` (done) line.
 - Indented `> ` lines under a card are appended to its description.
+- Indented `- [ ]`/`- [x]` lines under a card are checklist sub-tasks. Trello
+  lets a card have several separately named checklists; those are flattened
+  into one ordered sub-task list on import, since the markdown format doesn't
+  represent checklist names.
 - An indented `- due: YYYY-MM-DD` line sets the due date.
 - An indented `- labels: a, b, c` line sets a comma-separated label list.
 
@@ -78,11 +84,13 @@ kanbanbridge messy-export.json board.md --lenient
 
 This reads the same JSON you get from Trello's "Export as JSON" board menu
 option: a top-level object with `name`, `lists` (each with `id`, `name`,
-`closed`), and `cards` (each with `name`, `desc`, `idList`, `closed`, an
+`closed`), `cards` (each with `name`, `desc`, `idList`, `closed`, an
 optional `due`, an optional `dueComplete` boolean, and an optional `labels`
-array). `dueComplete` is what a markdown `- [x]` card round-trips to and
-from, since Trello has no other board-level "done" flag outside checklists.
-Writing back out produces a
+array), and a top-level `checklists` array (each with `idCard`, `name`, and
+`checkItems`, where each check item has a `name` and a `state` of
+`"complete"` or `"incomplete"`). `dueComplete` is what a markdown `- [x]`
+card round-trips to and from, since Trello has no other board-level "done"
+flag outside checklists. Writing back out produces a
 minimal version of that same shape — enough for Trello to accept it as an
 import, though it doesn't attempt to reproduce every field Trello itself
 writes (board backgrounds, member assignments, activity, and so on aren't
@@ -90,9 +98,9 @@ modeled here).
 
 ## What's not handled yet
 
-Checklists inside cards, attachments, comments, and Trello label colors are
-all dropped during conversion rather than represented in the Markdown format.
-That's a deliberate scope cut for now, not a bug.
+Attachments, comments, and Trello label colors are all dropped during
+conversion rather than represented in the Markdown format. That's a
+deliberate scope cut for now, not a bug.
 
 ## License
 

@@ -1,6 +1,6 @@
 import datetime
 
-from .model import Board, BoardList, Card, ConversionError
+from .model import Board, BoardList, Card, ChecklistItem, ConversionError
 
 
 def read_trello(data, lenient=False):
@@ -46,6 +46,7 @@ def read_trello(data, lenient=False):
         else:
             raise ConversionError("board is missing a 'cards' field")
 
+    cards_by_id = {}
     unsorted = None
     for raw_card in raw_cards:
         title = raw_card.get("name")
@@ -85,6 +86,31 @@ def read_trello(data, lenient=False):
                 board_lists.append(unsorted)
             target = unsorted
         target.cards.append(card)
+        raw_id = raw_card.get("id")
+        if raw_id:
+            cards_by_id[raw_id] = card
+
+    for raw_checklist in data.get("checklists") or []:
+        card = cards_by_id.get(raw_checklist.get("idCard"))
+        if card is None:
+            if lenient:
+                continue
+            raise ConversionError(f"checklist references unknown card id {raw_checklist.get('idCard')!r}")
+        for raw_item in raw_checklist.get("checkItems") or []:
+            item_name = raw_item.get("name")
+            if not item_name:
+                if lenient:
+                    continue
+                raise ConversionError(f"a checklist item on card '{card.title}' is missing a 'name'")
+            state = raw_item.get("state")
+            if state not in ("complete", "incomplete"):
+                if lenient:
+                    state = "incomplete"
+                else:
+                    raise ConversionError(
+                        f"checklist item '{item_name}' on card '{card.title}' has an unrecognized state {state!r}"
+                    )
+            card.checklist_items.append(ChecklistItem(text=item_name, done=state == "complete"))
 
     return Board(name=board_name, lists=board_lists)
 
@@ -104,12 +130,14 @@ def _parse_trello_date(value, card_title, lenient):
 def write_trello(board):
     lists = []
     cards = []
+    checklists = []
     for index, board_list in enumerate(board.lists):
         list_id = f"list{index}"
         lists.append({"id": list_id, "name": board_list.name, "closed": False})
         for card_index, card in enumerate(board_list.cards):
+            card_id = f"{list_id}-card{card_index}"
             entry = {
-                "id": f"{list_id}-card{card_index}",
+                "id": card_id,
                 "name": card.title,
                 "desc": card.description,
                 "idList": list_id,
@@ -121,7 +149,25 @@ def write_trello(board):
             if card.labels:
                 entry["labels"] = [{"name": label, "color": None} for label in card.labels]
             cards.append(entry)
-    return {"name": board.name, "lists": lists, "cards": cards}
+            if card.checklist_items:
+                checklist_id = f"{card_id}-checklist"
+                entry["idChecklists"] = [checklist_id]
+                checklists.append(
+                    {
+                        "id": checklist_id,
+                        "idCard": card_id,
+                        "name": "Checklist",
+                        "checkItems": [
+                            {
+                                "id": f"{checklist_id}-item{item_index}",
+                                "name": item.text,
+                                "state": "complete" if item.done else "incomplete",
+                            }
+                            for item_index, item in enumerate(card.checklist_items)
+                        ],
+                    }
+                )
+    return {"name": board.name, "lists": lists, "cards": cards, "checklists": checklists}
 
 
 def read_markdown(text, lenient=False):
@@ -167,6 +213,22 @@ def read_markdown(text, lenient=False):
             continue
 
         stripped = line.strip()
+        indented = line[:1].isspace()
+
+        if indented and (stripped.startswith("- [ ] ") or stripped.startswith("- [x] ")):
+            if current_card is None:
+                if lenient:
+                    continue
+                raise ConversionError(f"checklist item has no preceding card: {raw_line!r}")
+            item_text = stripped[6:].strip()
+            if not item_text:
+                if lenient:
+                    continue
+                raise ConversionError(f"checklist item has no text: {raw_line!r}")
+            current_card.checklist_items.append(
+                ChecklistItem(text=item_text, done=stripped.startswith("- [x] "))
+            )
+            continue
 
         if stripped.startswith("> "):
             if current_card is None:
@@ -224,6 +286,9 @@ def write_markdown(board):
             lines.append(f"- [{marker}] {card.title}")
             for desc_line in card.description.splitlines():
                 lines.append(f"  > {desc_line}")
+            for item in card.checklist_items:
+                item_marker = "x" if item.done else " "
+                lines.append(f"  - [{item_marker}] {item.text}")
             if card.due:
                 lines.append(f"  - due: {card.due}")
             if card.labels:

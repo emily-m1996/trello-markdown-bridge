@@ -7,12 +7,19 @@ class ConversionError(Exception):
 
 
 @dataclass
+class ChecklistItem:
+    text: str
+    done: bool = False
+
+
+@dataclass
 class Card:
     title: str
     description: str = ""
     done: bool = False
     due: Optional[str] = None  # ISO date, e.g. "2026-01-15"
     labels: List[str] = field(default_factory=list)
+    checklist_items: List[ChecklistItem] = field(default_factory=list)
 
 
 @dataclass
