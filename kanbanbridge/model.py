@@ -13,12 +13,18 @@ class ChecklistItem:
 
 
 @dataclass
+class Label:
+    name: str
+    color: Optional[str] = None  # one of Trello's fixed label colors, or None for colorless
+
+
+@dataclass
 class Card:
     title: str
     description: str = ""
     done: bool = False
     due: Optional[str] = None  # ISO date, e.g. "2026-01-15"
-    labels: List[str] = field(default_factory=list)
+    labels: List[Label] = field(default_factory=list)
     checklist_items: List[ChecklistItem] = field(default_factory=list)
 
 

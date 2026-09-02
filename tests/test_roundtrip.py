@@ -1,7 +1,7 @@
 import unittest
 
 from kanbanbridge.formats import read_markdown, read_trello, write_markdown, write_trello
-from kanbanbridge.model import Board, BoardList, Card, ChecklistItem
+from kanbanbridge.model import Board, BoardList, Card, ChecklistItem, ConversionError, Label
 
 # Fixture boards meant to stand in for real exports: a couple of lists, cards
 # with every field populated, an empty list, and some non-ASCII text to make
@@ -21,7 +21,7 @@ FIXTURE_BOARDS = [
                         title="Get quotes for kitchen tile",
                         description="Call the three places on the fridge list.\nAsk about lead time.",
                         due="2026-03-01",
-                        labels=["research", "urgent"],
+                        labels=[Label(name="research", color="sky"), Label(name="urgent", color="red")],
                         checklist_items=[
                             ChecklistItem(text="Call Ferguson Tile", done=True),
                             ChecklistItem(text="Call Home Depot"),
@@ -31,7 +31,7 @@ FIXTURE_BOARDS = [
                     Card(title="Pick a paint color", done=True),
                 ],
             ),
-            BoardList(name="Doing", cards=[Card(title="Demo the bathroom", labels=["messy"])]),
+            BoardList(name="Doing", cards=[Card(title="Demo the bathroom", labels=[Label(name="messy")])]),
             BoardList(name="Done", cards=[]),
         ],
     ),
@@ -87,7 +87,7 @@ class RawFixtureParsingTests(unittest.TestCase):
                     "idList": "l1",
                     "closed": False,
                     "due": "2026-02-10T00:00:00.000Z",
-                    "labels": [{"name": "writing", "color": "green"}],
+                    "labels": [{"name": "writing", "color": "green"}, {"name": "no color", "color": None}],
                 },
                 {
                     "id": "c2",
@@ -124,7 +124,7 @@ class RawFixtureParsingTests(unittest.TestCase):
         self.assertEqual(card.title, "Write announcement")
         self.assertEqual(card.description, "Draft in the shared doc first.")
         self.assertEqual(card.due, "2026-02-10")
-        self.assertEqual(card.labels, ["writing"])
+        self.assertEqual(card.labels, [Label(name="writing", color="green"), Label(name="no color")])
         # both named checklists on the card flatten into one ordered sub-task list
         self.assertEqual(
             card.checklist_items,
@@ -147,7 +147,7 @@ class RawFixtureParsingTests(unittest.TestCase):
             "  - [x] A finished sub-task\n"
             "  - [ ] An open sub-task\n"
             "  - due: 2026-01-15\n"
-            "  - labels: bug, urgent\n"
+            "  - labels: bug:red, urgent\n"
             "\n"
             "- [x] A finished card\n"
         )
@@ -163,9 +163,53 @@ class RawFixtureParsingTests(unittest.TestCase):
             [ChecklistItem(text="A finished sub-task", done=True), ChecklistItem(text="An open sub-task")],
         )
         self.assertEqual(first.due, "2026-01-15")
-        self.assertEqual(first.labels, ["bug", "urgent"])
+        self.assertEqual(first.labels, [Label(name="bug", color="red"), Label(name="urgent")])
         self.assertEqual(second.title, "A finished card")
         self.assertTrue(second.done)
+
+
+class LabelColorTests(unittest.TestCase):
+    def test_unrecognized_trello_color_raises_in_strict_mode(self):
+        raw = {
+            "name": "Board",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Card",
+                    "idList": "l1",
+                    "labels": [{"name": "weird", "color": "mauve"}],
+                }
+            ],
+        }
+        with self.assertRaises(ConversionError):
+            read_trello(raw)
+
+    def test_unrecognized_trello_color_dropped_in_lenient_mode(self):
+        raw = {
+            "name": "Board",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Card",
+                    "idList": "l1",
+                    "labels": [{"name": "weird", "color": "mauve"}],
+                }
+            ],
+        }
+        board = read_trello(raw, lenient=True)
+        self.assertEqual(board.lists[0].cards[0].labels, [Label(name="weird")])
+
+    def test_unrecognized_markdown_color_falls_back_to_full_token_in_lenient_mode(self):
+        text = "# Board\n\n## List\n\n- [ ] Card\n  - labels: bug:mauve\n"
+        board = read_markdown(text, lenient=True)
+        self.assertEqual(board.lists[0].cards[0].labels, [Label(name="bug:mauve")])
+
+    def test_unrecognized_markdown_color_raises_in_strict_mode(self):
+        text = "# Board\n\n## List\n\n- [ ] Card\n  - labels: bug:mauve\n"
+        with self.assertRaises(ConversionError):
+            read_markdown(text)
 
 
 if __name__ == "__main__":

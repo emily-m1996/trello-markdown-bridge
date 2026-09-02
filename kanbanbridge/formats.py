@@ -1,6 +1,12 @@
 import datetime
 
-from .model import Board, BoardList, Card, ChecklistItem, ConversionError
+from .model import Board, BoardList, Card, ChecklistItem, ConversionError, Label
+
+# Trello's fixed set of label colors, as used in its JSON export. A label with
+# no color set has color: null in the export.
+TRELLO_LABEL_COLORS = {
+    "yellow", "purple", "blue", "red", "green", "orange", "black", "sky", "pink", "lime",
+}
 
 
 def read_trello(data, lenient=False):
@@ -66,8 +72,17 @@ def read_trello(data, lenient=False):
         labels = []
         for label in raw_card.get("labels") or []:
             label_name = label.get("name")
-            if label_name:
-                labels.append(label_name)
+            if not label_name:
+                continue
+            label_color = label.get("color")
+            if label_color is not None and label_color not in TRELLO_LABEL_COLORS:
+                if lenient:
+                    label_color = None
+                else:
+                    raise ConversionError(
+                        f"label '{label_name}' on card '{title}' has an unrecognized color {label_color!r}"
+                    )
+            labels.append(Label(name=label_name, color=label_color))
 
         card = Card(
             title=title,
@@ -147,7 +162,7 @@ def write_trello(board):
             if card.due:
                 entry["due"] = f"{card.due}T00:00:00.000Z"
             if card.labels:
-                entry["labels"] = [{"name": label, "color": None} for label in card.labels]
+                entry["labels"] = [{"name": label.name, "color": label.color} for label in card.labels]
             cards.append(entry)
             if card.checklist_items:
                 checklist_id = f"{card_id}-checklist"
@@ -260,7 +275,21 @@ def read_markdown(text, lenient=False):
                     continue
                 raise ConversionError(f"labels line has no preceding card: {raw_line!r}")
             value = stripped[len("- labels: "):].strip()
-            current_card.labels = [label.strip() for label in value.split(",") if label.strip()]
+            labels = []
+            for token in value.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                name, sep, color = token.rpartition(":")
+                if sep and color in TRELLO_LABEL_COLORS:
+                    labels.append(Label(name=name.strip(), color=color))
+                elif sep and not lenient:
+                    raise ConversionError(
+                        f"label '{token}' on card '{current_card.title}' has an unrecognized color {color!r}"
+                    )
+                else:
+                    labels.append(Label(name=token))
+            current_card.labels = labels
             continue
 
         if lenient:
@@ -292,6 +321,9 @@ def write_markdown(board):
             if card.due:
                 lines.append(f"  - due: {card.due}")
             if card.labels:
-                lines.append(f"  - labels: {', '.join(card.labels)}")
+                rendered = [
+                    f"{label.name}:{label.color}" if label.color else label.name for label in card.labels
+                ]
+                lines.append(f"  - labels: {', '.join(rendered)}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
