@@ -9,7 +9,7 @@ TRELLO_LABEL_COLORS = {
 }
 
 
-def read_trello(data, lenient=False):
+def read_trello(data, lenient=False, diagnostics=None):
     if not isinstance(data, dict):
         raise ConversionError("top-level Trello export must be a JSON object")
 
@@ -17,6 +17,7 @@ def read_trello(data, lenient=False):
     if not board_name:
         if lenient:
             board_name = "Untitled Board"
+            _warn(diagnostics, "board is missing a 'name' field; using 'Untitled Board'")
         else:
             raise ConversionError("board is missing a 'name' field")
 
@@ -24,6 +25,7 @@ def read_trello(data, lenient=False):
     if raw_lists is None:
         if lenient:
             raw_lists = []
+            _warn(diagnostics, "board is missing a 'lists' field; treating it as empty")
         else:
             raise ConversionError("board is missing a 'lists' field")
 
@@ -34,10 +36,12 @@ def read_trello(data, lenient=False):
         list_name = raw_list.get("name")
         if not list_id or not list_name:
             if lenient:
+                _warn(diagnostics, f"skipped list entry missing 'id' or 'name': {raw_list!r}")
                 continue
             raise ConversionError(f"list entry is missing 'id' or 'name': {raw_list!r}")
         if raw_list.get("closed"):
             if lenient:
+                _warn(diagnostics, f"skipped archived list '{list_name}'")
                 continue
             # archiving is a deliberate action in Trello; dropping it silently would lose data
             raise ConversionError(f"list '{list_name}' is archived (closed); rerun with --lenient to skip it")
@@ -49,6 +53,7 @@ def read_trello(data, lenient=False):
     if raw_cards is None:
         if lenient:
             raw_cards = []
+            _warn(diagnostics, "board is missing a 'cards' field; treating it as empty")
         else:
             raise ConversionError("board is missing a 'cards' field")
 
@@ -58,16 +63,18 @@ def read_trello(data, lenient=False):
         title = raw_card.get("name")
         if not title:
             if lenient:
+                _warn(diagnostics, f"skipped card entry missing a 'name': {raw_card!r}")
                 continue
             raise ConversionError(f"card entry is missing a 'name': {raw_card!r}")
         if raw_card.get("closed"):
             if lenient:
+                _warn(diagnostics, f"skipped archived card '{title}'")
                 continue
             raise ConversionError(f"card '{title}' is archived (closed); rerun with --lenient to skip it")
 
         due = raw_card.get("due")
         if due:
-            due = _parse_trello_date(due, title, lenient)
+            due = _parse_trello_date(due, title, lenient, diagnostics)
 
         labels = []
         for label in raw_card.get("labels") or []:
@@ -77,6 +84,11 @@ def read_trello(data, lenient=False):
             label_color = label.get("color")
             if label_color is not None and label_color not in TRELLO_LABEL_COLORS:
                 if lenient:
+                    _warn(
+                        diagnostics,
+                        f"label '{label_name}' on card '{title}' had unrecognized color "
+                        f"{label_color!r}; treating it as colorless",
+                    )
                     label_color = None
                 else:
                     raise ConversionError(
@@ -96,6 +108,10 @@ def read_trello(data, lenient=False):
         if target is None:
             if not lenient:
                 raise ConversionError(f"card '{title}' references unknown list id {raw_card.get('idList')!r}")
+            _warn(
+                diagnostics,
+                f"card '{title}' referenced unknown list id {raw_card.get('idList')!r}; moved to 'Unsorted'",
+            )
             if unsorted is None:
                 unsorted = BoardList(name="Unsorted")
                 board_lists.append(unsorted)
@@ -109,17 +125,24 @@ def read_trello(data, lenient=False):
         card = cards_by_id.get(raw_checklist.get("idCard"))
         if card is None:
             if lenient:
+                _warn(diagnostics, f"skipped checklist referencing unknown card id {raw_checklist.get('idCard')!r}")
                 continue
             raise ConversionError(f"checklist references unknown card id {raw_checklist.get('idCard')!r}")
         for raw_item in raw_checklist.get("checkItems") or []:
             item_name = raw_item.get("name")
             if not item_name:
                 if lenient:
+                    _warn(diagnostics, f"skipped a checklist item on card '{card.title}' missing a 'name'")
                     continue
                 raise ConversionError(f"a checklist item on card '{card.title}' is missing a 'name'")
             state = raw_item.get("state")
             if state not in ("complete", "incomplete"):
                 if lenient:
+                    _warn(
+                        diagnostics,
+                        f"checklist item '{item_name}' on card '{card.title}' had unrecognized state "
+                        f"{state!r}; treating it as incomplete",
+                    )
                     state = "incomplete"
                 else:
                     raise ConversionError(
@@ -130,13 +153,19 @@ def read_trello(data, lenient=False):
     return Board(name=board_name, lists=board_lists)
 
 
-def _parse_trello_date(value, card_title, lenient):
+def _warn(diagnostics, message):
+    if diagnostics is not None:
+        diagnostics.warn(message)
+
+
+def _parse_trello_date(value, card_title, lenient, diagnostics=None):
     # Trello timestamps look like "2026-01-15T00:00:00.000Z"; we keep just the date part.
     date_part = value.split("T", 1)[0]
     try:
         datetime.date.fromisoformat(date_part)
     except ValueError:
         if lenient:
+            _warn(diagnostics, f"dropped unparseable due date on card '{card_title}': {value!r}")
             return None
         raise ConversionError(f"card '{card_title}' has an unparseable due date: {value!r}")
     return date_part
@@ -185,7 +214,7 @@ def write_trello(board):
     return {"name": board.name, "lists": lists, "cards": cards, "checklists": checklists}
 
 
-def read_markdown(text, lenient=False):
+def read_markdown(text, lenient=False, diagnostics=None):
     board_name = None
     board_lists = []
     current_list = None
@@ -196,6 +225,7 @@ def read_markdown(text, lenient=False):
         if current_list is None:
             if not lenient:
                 raise ConversionError("card appears before any '## List' heading")
+            _warn(diagnostics, "card appeared before any '## List' heading; filed under 'Unsorted'")
             current_list = BoardList(name="Unsorted")
             board_lists.append(current_list)
         return current_list
@@ -206,8 +236,10 @@ def read_markdown(text, lenient=False):
             continue
 
         if line.startswith("# "):
-            if board_name is not None and not lenient:
-                raise ConversionError("found a second top-level '# ' heading; a board can only have one title")
+            if board_name is not None:
+                if not lenient:
+                    raise ConversionError("found a second top-level '# ' heading; a board can only have one title")
+                _warn(diagnostics, f"found a second top-level heading {line[2:].strip()!r}; kept the last one")
             board_name = line[2:].strip()
             continue
 
@@ -221,6 +253,7 @@ def read_markdown(text, lenient=False):
             title = line[6:].strip()
             if not title:
                 if lenient:
+                    _warn(diagnostics, f"skipped a card checkbox with no title: {raw_line!r}")
                     continue
                 raise ConversionError(f"card checkbox has no title: {raw_line!r}")
             current_card = Card(title=title, done=line.startswith("- [x] "))
@@ -233,11 +266,13 @@ def read_markdown(text, lenient=False):
         if indented and (stripped.startswith("- [ ] ") or stripped.startswith("- [x] ")):
             if current_card is None:
                 if lenient:
+                    _warn(diagnostics, f"skipped a checklist item with no preceding card: {raw_line!r}")
                     continue
                 raise ConversionError(f"checklist item has no preceding card: {raw_line!r}")
             item_text = stripped[6:].strip()
             if not item_text:
                 if lenient:
+                    _warn(diagnostics, f"skipped a checklist item with no text: {raw_line!r}")
                     continue
                 raise ConversionError(f"checklist item has no text: {raw_line!r}")
             current_card.checklist_items.append(
@@ -248,6 +283,7 @@ def read_markdown(text, lenient=False):
         if stripped.startswith("> "):
             if current_card is None:
                 if lenient:
+                    _warn(diagnostics, f"skipped a description line with no preceding card: {raw_line!r}")
                     continue
                 raise ConversionError(f"description line has no preceding card: {raw_line!r}")
             piece = stripped[2:]
@@ -257,6 +293,7 @@ def read_markdown(text, lenient=False):
         if stripped.startswith("- due: "):
             if current_card is None:
                 if lenient:
+                    _warn(diagnostics, f"skipped a due date line with no preceding card: {raw_line!r}")
                     continue
                 raise ConversionError(f"due date line has no preceding card: {raw_line!r}")
             value = stripped[len("- due: "):].strip()
@@ -264,6 +301,7 @@ def read_markdown(text, lenient=False):
                 datetime.date.fromisoformat(value)
             except ValueError:
                 if lenient:
+                    _warn(diagnostics, f"dropped unparseable due date on card '{current_card.title}': {value!r}")
                     continue
                 raise ConversionError(f"card '{current_card.title}' has an unparseable due date: {value!r}")
             current_card.due = value
@@ -272,6 +310,7 @@ def read_markdown(text, lenient=False):
         if stripped.startswith("- labels: "):
             if current_card is None:
                 if lenient:
+                    _warn(diagnostics, f"skipped a labels line with no preceding card: {raw_line!r}")
                     continue
                 raise ConversionError(f"labels line has no preceding card: {raw_line!r}")
             value = stripped[len("- labels: "):].strip()
@@ -287,18 +326,27 @@ def read_markdown(text, lenient=False):
                     raise ConversionError(
                         f"label '{token}' on card '{current_card.title}' has an unrecognized color {color!r}"
                     )
+                elif sep:
+                    _warn(
+                        diagnostics,
+                        f"label '{token}' on card '{current_card.title}' had unrecognized color "
+                        f"{color!r}; kept the full token as the label name",
+                    )
+                    labels.append(Label(name=token))
                 else:
                     labels.append(Label(name=token))
             current_card.labels = labels
             continue
 
         if lenient:
+            _warn(diagnostics, f"ignored unrecognized line: {raw_line!r}")
             continue
         raise ConversionError(f"unrecognized line: {raw_line!r}")
 
     if board_name is None:
         if lenient:
             board_name = "Untitled Board"
+            _warn(diagnostics, "markdown file is missing a top-level '# Board Name' heading; using 'Untitled Board'")
         else:
             raise ConversionError("markdown file is missing a top-level '# Board Name' heading")
 

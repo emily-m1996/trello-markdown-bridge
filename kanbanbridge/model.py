@@ -38,3 +38,15 @@ class BoardList:
 class Board:
     name: str
     lists: List[BoardList] = field(default_factory=list)
+
+
+@dataclass
+class Diagnostics:
+    """Collects the compromises --lenient mode made: dropped fields, skipped
+    archived items, rerouted cards, and the like. Empty in strict mode, since
+    anything that would need a note here raises a ConversionError instead."""
+
+    warnings: List[str] = field(default_factory=list)
+
+    def warn(self, message: str) -> None:
+        self.warnings.append(message)

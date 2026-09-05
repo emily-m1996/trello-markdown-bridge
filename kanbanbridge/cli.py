@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from .formats import read_markdown, read_trello, write_markdown, write_trello
-from .model import ConversionError
+from .model import ConversionError, Diagnostics
 
 FORMAT_BY_SUFFIX = {".json": "trello", ".md": "markdown", ".markdown": "markdown"}
 
@@ -43,7 +43,25 @@ def build_parser():
         action="store_true",
         help="tolerate missing fields, archived items, and bad dates instead of raising",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the conversion and print a diagnostics summary without writing the output file",
+    )
     return parser
+
+
+def print_dry_run_summary(board, from_format, to_format, diagnostics):
+    card_count = sum(len(board_list.cards) for board_list in board.lists)
+    print(f"kanbanbridge: dry run OK ({from_format} -> {to_format}), nothing written")
+    print(f"  board: {board.name!r}")
+    print(f"  {len(board.lists)} list(s), {card_count} card(s)")
+    if diagnostics.warnings:
+        print(f"  {len(diagnostics.warnings)} warning(s):")
+        for warning in diagnostics.warnings:
+            print(f"    - {warning}")
+    else:
+        print("  0 warnings")
 
 
 def main(argv=None):
@@ -55,15 +73,20 @@ def main(argv=None):
         to_format = detect_format(args.output, args.to_format)
 
         source_text = Path(args.input).read_text(encoding="utf-8")
+        diagnostics = Diagnostics()
         if from_format == "trello":
-            board = read_trello(json.loads(source_text), lenient=args.lenient)
+            board = read_trello(json.loads(source_text), lenient=args.lenient, diagnostics=diagnostics)
         else:
-            board = read_markdown(source_text, lenient=args.lenient)
+            board = read_markdown(source_text, lenient=args.lenient, diagnostics=diagnostics)
 
         if to_format == "trello":
             output_text = json.dumps(write_trello(board), indent=2) + "\n"
         else:
             output_text = write_markdown(board)
+
+        if args.dry_run:
+            print_dry_run_summary(board, from_format, to_format, diagnostics)
+            return 0
 
         Path(args.output).write_text(output_text, encoding="utf-8")
     except ConversionError as exc:

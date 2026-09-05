@@ -51,6 +51,26 @@ Pass `--lenient` to convert anyway. In lenient mode:
 kanbanbridge messy-export.json board.md --lenient
 ```
 
+## Checking an export before converting it
+
+`--dry-run` parses the input, runs the full conversion in memory, and prints a
+summary instead of writing the output file. Combine it with `--lenient` to see
+exactly what a messy export would cost you before committing to it:
+
+```
+$ kanbanbridge messy-export.json board.md --dry-run --lenient
+kanbanbridge: dry run OK (trello -> markdown), nothing written
+  board: 'Launch Plan'
+  3 list(s), 12 card(s)
+  2 warning(s):
+    - skipped archived card 'Old task'
+    - card 'Orphan card' referenced unknown list id 'old-list-id'; moved to 'Unsorted'
+```
+
+Without `--lenient`, `--dry-run` just confirms the conversion would succeed
+as-is: strict mode raises on the same problems it always does, so there's
+nothing to summarize.
+
 ## The Markdown format
 
 ```
