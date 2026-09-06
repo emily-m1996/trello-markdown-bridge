@@ -1,6 +1,6 @@
 import datetime
 
-from .model import Board, BoardList, Card, ChecklistItem, ConversionError, Label
+from .model import Attachment, Board, BoardList, Card, ChecklistItem, Comment, ConversionError, Label
 
 # Trello's fixed set of label colors, as used in its JSON export. A label with
 # no color set has color: null in the export.
@@ -96,12 +96,26 @@ def read_trello(data, lenient=False, diagnostics=None):
                     )
             labels.append(Label(name=label_name, color=label_color))
 
+        attachments = []
+        for raw_attachment in raw_card.get("attachments") or []:
+            url = raw_attachment.get("url")
+            if not url:
+                if lenient:
+                    _warn(diagnostics, f"skipped an attachment with no url on card '{title}'")
+                    continue
+                raise ConversionError(f"an attachment on card '{title}' is missing a 'url'")
+            name = raw_attachment.get("name")
+            if name == url:
+                name = None
+            attachments.append(Attachment(url=url, name=name))
+
         card = Card(
             title=title,
             description=raw_card.get("desc", "") or "",
             done=bool(raw_card.get("dueComplete", False)),
             due=due,
             labels=labels,
+            attachments=attachments,
         )
 
         target = lists_by_id.get(raw_card.get("idList"))
@@ -150,6 +164,35 @@ def read_trello(data, lenient=False, diagnostics=None):
                     )
             card.checklist_items.append(ChecklistItem(text=item_name, done=state == "complete"))
 
+    for raw_action in data.get("actions") or []:
+        if raw_action.get("type") != "commentCard":
+            continue
+        raw_data = raw_action.get("data") or {}
+        card = cards_by_id.get((raw_data.get("card") or {}).get("id"))
+        if card is None:
+            if lenient:
+                _warn(diagnostics, "skipped a comment referencing an unknown or deleted card")
+                continue
+            raise ConversionError("a comment action references an unknown or deleted card")
+        text = raw_data.get("text")
+        if not text:
+            if lenient:
+                _warn(diagnostics, f"skipped an empty comment on card '{card.title}'")
+                continue
+            raise ConversionError(f"a comment on card '{card.title}' has no text")
+        member = raw_action.get("memberCreator") or {}
+        author = member.get("fullName") or member.get("username")
+        if not author:
+            if lenient:
+                _warn(diagnostics, f"comment on card '{card.title}' has no author; using 'Unknown'")
+                author = "Unknown"
+            else:
+                raise ConversionError(f"a comment on card '{card.title}' has no author")
+        date = raw_action.get("date")
+        if date:
+            date = _parse_trello_datetime(date, card.title, lenient, diagnostics)
+        card.comments.append(Comment(author=author, text=text, date=date))
+
     return Board(name=board_name, lists=board_lists)
 
 
@@ -171,10 +214,24 @@ def _parse_trello_date(value, card_title, lenient, diagnostics=None):
     return date_part
 
 
+def _parse_trello_datetime(value, card_title, lenient, diagnostics=None):
+    # Unlike due dates, comment timestamps keep their time-of-day, so we validate
+    # the whole thing but store it as-is rather than truncating to a date.
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        if lenient:
+            _warn(diagnostics, f"dropped unparseable comment timestamp on card '{card_title}': {value!r}")
+            return None
+        raise ConversionError(f"a comment on card '{card_title}' has an unparseable timestamp: {value!r}")
+    return value
+
+
 def write_trello(board):
     lists = []
     cards = []
     checklists = []
+    actions = []
     for index, board_list in enumerate(board.lists):
         list_id = f"list{index}"
         lists.append({"id": list_id, "name": board_list.name, "closed": False})
@@ -192,7 +249,22 @@ def write_trello(board):
                 entry["due"] = f"{card.due}T00:00:00.000Z"
             if card.labels:
                 entry["labels"] = [{"name": label.name, "color": label.color} for label in card.labels]
+            if card.attachments:
+                entry["attachments"] = [
+                    {"name": attachment.name or attachment.url, "url": attachment.url}
+                    for attachment in card.attachments
+                ]
             cards.append(entry)
+            for comment_index, comment in enumerate(card.comments):
+                action = {
+                    "id": f"{card_id}-comment{comment_index}",
+                    "type": "commentCard",
+                    "data": {"text": comment.text, "card": {"id": card_id}},
+                    "memberCreator": {"fullName": comment.author},
+                }
+                if comment.date:
+                    action["date"] = comment.date
+                actions.append(action)
             if card.checklist_items:
                 checklist_id = f"{card_id}-checklist"
                 entry["idChecklists"] = [checklist_id]
@@ -211,7 +283,7 @@ def write_trello(board):
                         ],
                     }
                 )
-    return {"name": board.name, "lists": lists, "cards": cards, "checklists": checklists}
+    return {"name": board.name, "lists": lists, "cards": cards, "checklists": checklists, "actions": actions}
 
 
 def read_markdown(text, lenient=False, diagnostics=None):
@@ -219,6 +291,7 @@ def read_markdown(text, lenient=False, diagnostics=None):
     board_lists = []
     current_list = None
     current_card = None
+    current_comment = None
 
     def require_list():
         nonlocal current_list
@@ -247,6 +320,7 @@ def read_markdown(text, lenient=False, diagnostics=None):
             current_list = BoardList(name=line[3:].strip())
             board_lists.append(current_list)
             current_card = None
+            current_comment = None
             continue
 
         if line.startswith("- [ ] ") or line.startswith("- [x] "):
@@ -257,6 +331,7 @@ def read_markdown(text, lenient=False, diagnostics=None):
                     continue
                 raise ConversionError(f"card checkbox has no title: {raw_line!r}")
             current_card = Card(title=title, done=line.startswith("- [x] "))
+            current_comment = None
             require_list().cards.append(current_card)
             continue
 
@@ -278,6 +353,16 @@ def read_markdown(text, lenient=False, diagnostics=None):
             current_card.checklist_items.append(
                 ChecklistItem(text=item_text, done=stripped.startswith("- [x] "))
             )
+            continue
+
+        if stripped.startswith(">> "):
+            if current_comment is None:
+                if lenient:
+                    _warn(diagnostics, f"skipped a comment text line with no preceding comment: {raw_line!r}")
+                    continue
+                raise ConversionError(f"comment text line has no preceding comment: {raw_line!r}")
+            piece = stripped[3:]
+            current_comment.text = f"{current_comment.text}\n{piece}" if current_comment.text else piece
             continue
 
         if stripped.startswith("> "):
@@ -338,6 +423,45 @@ def read_markdown(text, lenient=False, diagnostics=None):
             current_card.labels = labels
             continue
 
+        if stripped.startswith("- attachment: "):
+            if current_card is None:
+                if lenient:
+                    _warn(diagnostics, f"skipped an attachment line with no preceding card: {raw_line!r}")
+                    continue
+                raise ConversionError(f"attachment line has no preceding card: {raw_line!r}")
+            value = stripped[len("- attachment: "):].strip()
+            if value.startswith("[") and "](" in value and value.endswith(")"):
+                name, _, rest = value[1:].partition("](")
+                url = rest[:-1]
+            else:
+                name, url = None, value
+            if not url:
+                if lenient:
+                    _warn(diagnostics, f"skipped an attachment with no url on card '{current_card.title}'")
+                    continue
+                raise ConversionError(f"an attachment on card '{current_card.title}' is missing a url")
+            current_card.attachments.append(Attachment(url=url, name=name))
+            continue
+
+        if stripped.startswith("- comment: "):
+            if current_card is None:
+                if lenient:
+                    _warn(diagnostics, f"skipped a comment line with no preceding card: {raw_line!r}")
+                    continue
+                raise ConversionError(f"comment line has no preceding card: {raw_line!r}")
+            value = stripped[len("- comment: "):].strip()
+            author, sep, date = value.partition(" @ ")
+            author = author.strip()
+            date = date.strip() if sep else None
+            if not author:
+                if lenient:
+                    _warn(diagnostics, f"skipped a comment with no author on card '{current_card.title}'")
+                    continue
+                raise ConversionError(f"a comment on card '{current_card.title}' is missing an author")
+            current_comment = Comment(author=author, text="", date=date or None)
+            current_card.comments.append(current_comment)
+            continue
+
         if lenient:
             _warn(diagnostics, f"ignored unrecognized line: {raw_line!r}")
             continue
@@ -373,5 +497,13 @@ def write_markdown(board):
                     f"{label.name}:{label.color}" if label.color else label.name for label in card.labels
                 ]
                 lines.append(f"  - labels: {', '.join(rendered)}")
+            for attachment in card.attachments:
+                value = f"[{attachment.name}]({attachment.url})" if attachment.name else attachment.url
+                lines.append(f"  - attachment: {value}")
+            for comment in card.comments:
+                header = f"{comment.author} @ {comment.date}" if comment.date else comment.author
+                lines.append(f"  - comment: {header}")
+                for comment_line in comment.text.splitlines():
+                    lines.append(f"    >> {comment_line}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

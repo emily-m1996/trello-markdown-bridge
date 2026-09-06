@@ -45,6 +45,9 @@ Pass `--lenient` to convert anyway. In lenient mode:
 - archived (`closed`) lists and cards are skipped
 - cards pointing at an unknown list id are moved into an "Unsorted" list
 - unparseable due dates are dropped instead of raising
+- attachments missing a url, and comments missing text, an author, or with an
+  unparseable timestamp, are dropped instead of raising
+- comments referencing an unknown or deleted card are skipped
 - unrecognized lines in a markdown file are ignored
 
 ```
@@ -85,6 +88,9 @@ nothing to summarize.
   - [x] A finished checklist sub-task
   - due: 2026-01-15
   - labels: bug:red, urgent
+  - attachment: [Design doc](https://example.com/design.pdf)
+  - comment: Alex Rivera @ 2026-02-11T09:30:00.000Z
+    >> Draft looks good.
 
 - [x] A finished card
 ```
@@ -101,29 +107,39 @@ nothing to summarize.
 - An indented `- labels: a, b, c` line sets a comma-separated label list. A
   label carrying one of Trello's fixed colors is written as `name:color`
   (e.g. `bug:red`); a colorless label is just `name`.
+- An indented `- attachment: URL` line adds an attachment. If the attachment
+  was given a name other than its url in Trello, it's written as
+  `- attachment: [name](url)` instead.
+- An indented `- comment: AUTHOR @ TIMESTAMP` line starts a comment (the
+  `@ TIMESTAMP` part is optional). Its body is one or more `>> ` lines
+  indented under it:
+
+  ```
+  - comment: Alex Rivera @ 2026-02-11T09:30:00.000Z
+    >> Draft looks good.
+    >> Ship it.
+  ```
 
 ## Trello export format
 
 This reads the same JSON you get from Trello's "Export as JSON" board menu
 option: a top-level object with `name`, `lists` (each with `id`, `name`,
 `closed`), `cards` (each with `name`, `desc`, `idList`, `closed`, an
-optional `due`, an optional `dueComplete` boolean, and an optional `labels`
+optional `due`, an optional `dueComplete` boolean, an optional `labels`
 array of `{name, color}` objects, where `color` is one of Trello's fixed
-label colors or `null`), and a top-level `checklists` array (each with
-`idCard`, `name`, and `checkItems`, where each check item has a `name` and a `state` of
-`"complete"` or `"incomplete"`). `dueComplete` is what a markdown `- [x]`
-card round-trips to and from, since Trello has no other board-level "done"
-flag outside checklists. Writing back out produces a
-minimal version of that same shape — enough for Trello to accept it as an
-import, though it doesn't attempt to reproduce every field Trello itself
-writes (board backgrounds, member assignments, activity, and so on aren't
+label colors or `null`, and an optional `attachments` array of `{name, url}`
+objects), a top-level `checklists` array (each with `idCard`, `name`, and
+`checkItems`, where each check item has a `name` and a `state` of
+`"complete"` or `"incomplete"`), and a top-level `actions` array holding,
+among other activity we ignore, comments: entries with `type: "commentCard"`,
+a `date`, `data.text`, `data.card.id`, and `memberCreator.fullName` (or
+`.username` if the full name isn't set). `dueComplete` is what a markdown
+`- [x]` card round-trips to and from, since Trello has no other board-level
+"done" flag outside checklists. Writing back out produces a minimal version
+of that same shape — enough for Trello to accept it as an import, though it
+doesn't attempt to reproduce every field Trello itself writes (board
+backgrounds, member assignments, non-comment activity, and so on aren't
 modeled here).
-
-## What's not handled yet
-
-Attachments and comments are dropped during conversion rather than
-represented in the Markdown format. That's a deliberate scope cut for now,
-not a bug.
 
 ## License
 

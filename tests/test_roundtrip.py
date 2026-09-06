@@ -1,7 +1,7 @@
 import unittest
 
 from kanbanbridge.formats import read_markdown, read_trello, write_markdown, write_trello
-from kanbanbridge.model import Board, BoardList, Card, ChecklistItem, ConversionError, Label
+from kanbanbridge.model import Attachment, Board, BoardList, Card, ChecklistItem, Comment, ConversionError, Label
 
 # Fixture boards meant to stand in for real exports: a couple of lists, cards
 # with every field populated, an empty list, and some non-ASCII text to make
@@ -26,6 +26,21 @@ FIXTURE_BOARDS = [
                             ChecklistItem(text="Call Ferguson Tile", done=True),
                             ChecklistItem(text="Call Home Depot"),
                             ChecklistItem(text="Call the place on 5th"),
+                        ],
+                        attachments=[
+                            Attachment(url="https://example.com/tile-catalog.pdf"),
+                            Attachment(url="https://example.com/quote-1.pdf", name="Ferguson quote"),
+                        ],
+                        comments=[
+                            Comment(
+                                author="Sam",
+                                text="Ferguson quoted three weeks out.",
+                                date="2026-02-20T15:04:00.000Z",
+                            ),
+                            Comment(
+                                author="Jo",
+                                text="Worth calling around for a faster turnaround.\nWill do this weekend.",
+                            ),
                         ],
                     ),
                     Card(title="Pick a paint color", done=True),
@@ -135,6 +150,86 @@ class RawFixtureParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_parses_attachments_and_comments_from_a_realistic_trello_export(self):
+        raw = {
+            "name": "Launch Plan",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Write announcement",
+                    "desc": "",
+                    "idList": "l1",
+                    "closed": False,
+                    "attachments": [
+                        {"name": "https://example.com/brief.pdf", "url": "https://example.com/brief.pdf"},
+                        {"name": "Style guide", "url": "https://example.com/style.pdf"},
+                    ],
+                }
+            ],
+            "actions": [
+                {
+                    "type": "commentCard",
+                    "date": "2026-02-11T09:30:00.000Z",
+                    "data": {"text": "Draft looks good.", "card": {"id": "c1"}},
+                    "memberCreator": {"fullName": "Alex Rivera"},
+                },
+                {
+                    "type": "updateCard",
+                    "data": {"card": {"id": "c1"}},
+                },
+            ],
+        }
+        board = read_trello(raw)
+        card = board.lists[0].cards[0]
+        self.assertEqual(
+            card.attachments,
+            [
+                Attachment(url="https://example.com/brief.pdf"),
+                Attachment(url="https://example.com/style.pdf", name="Style guide"),
+            ],
+        )
+        self.assertEqual(
+            card.comments,
+            [Comment(author="Alex Rivera", text="Draft looks good.", date="2026-02-11T09:30:00.000Z")],
+        )
+
+    def test_parses_attachments_and_comments_from_markdown(self):
+        text = (
+            "# Board\n"
+            "\n"
+            "## List\n"
+            "\n"
+            "- [ ] Card\n"
+            "  - attachment: https://example.com/plain.pdf\n"
+            "  - attachment: [Style guide](https://example.com/style.pdf)\n"
+            "  - comment: Alex Rivera @ 2026-02-11T09:30:00.000Z\n"
+            "    >> Draft looks good.\n"
+            "    >> Ship it.\n"
+            "  - comment: Jo\n"
+            "    >> No date on this one.\n"
+        )
+        board = read_markdown(text)
+        card = board.lists[0].cards[0]
+        self.assertEqual(
+            card.attachments,
+            [
+                Attachment(url="https://example.com/plain.pdf"),
+                Attachment(url="https://example.com/style.pdf", name="Style guide"),
+            ],
+        )
+        self.assertEqual(
+            card.comments,
+            [
+                Comment(
+                    author="Alex Rivera",
+                    text="Draft looks good.\nShip it.",
+                    date="2026-02-11T09:30:00.000Z",
+                ),
+                Comment(author="Jo", text="No date on this one."),
+            ],
+        )
+
     def test_parses_the_readme_example(self):
         text = (
             "# Board Name\n"
@@ -166,6 +261,64 @@ class RawFixtureParsingTests(unittest.TestCase):
         self.assertEqual(first.labels, [Label(name="bug", color="red"), Label(name="urgent")])
         self.assertEqual(second.title, "A finished card")
         self.assertTrue(second.done)
+
+
+class AttachmentsAndCommentsTests(unittest.TestCase):
+    def _board_with_orphan_comment(self):
+        return {
+            "name": "Board",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [{"id": "c1", "name": "Card", "idList": "l1", "closed": False}],
+            "actions": [
+                {
+                    "type": "commentCard",
+                    "data": {"text": "orphaned", "card": {"id": "missing-card"}},
+                    "memberCreator": {"fullName": "Alex"},
+                }
+            ],
+        }
+
+    def test_comment_on_unknown_card_raises_in_strict_mode(self):
+        with self.assertRaises(ConversionError):
+            read_trello(self._board_with_orphan_comment())
+
+    def test_comment_on_unknown_card_skipped_in_lenient_mode(self):
+        board = read_trello(self._board_with_orphan_comment(), lenient=True)
+        self.assertEqual(board.lists[0].cards[0].comments, [])
+
+    def test_attachment_missing_url_raises_in_strict_mode(self):
+        raw = {
+            "name": "Board",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Card",
+                    "idList": "l1",
+                    "closed": False,
+                    "attachments": [{"name": "no url here"}],
+                }
+            ],
+        }
+        with self.assertRaises(ConversionError):
+            read_trello(raw)
+
+    def test_attachment_missing_url_dropped_in_lenient_mode(self):
+        raw = {
+            "name": "Board",
+            "lists": [{"id": "l1", "name": "To Do", "closed": False}],
+            "cards": [
+                {
+                    "id": "c1",
+                    "name": "Card",
+                    "idList": "l1",
+                    "closed": False,
+                    "attachments": [{"name": "no url here"}],
+                }
+            ],
+        }
+        board = read_trello(raw, lenient=True)
+        self.assertEqual(board.lists[0].cards[0].attachments, [])
 
 
 class LabelColorTests(unittest.TestCase):

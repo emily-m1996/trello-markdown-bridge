@@ -19,6 +19,19 @@ class Label:
 
 
 @dataclass
+class Attachment:
+    url: str
+    name: Optional[str] = None  # None means "not renamed"; displays as the bare url
+
+
+@dataclass
+class Comment:
+    author: str
+    text: str
+    date: Optional[str] = None  # Trello's full ISO timestamp, e.g. "2026-01-15T12:00:00.000Z"
+
+
+@dataclass
 class Card:
     title: str
     description: str = ""
@@ -26,6 +39,8 @@ class Card:
     due: Optional[str] = None  # ISO date, e.g. "2026-01-15"
     labels: List[Label] = field(default_factory=list)
     checklist_items: List[ChecklistItem] = field(default_factory=list)
+    attachments: List[Attachment] = field(default_factory=list)
+    comments: List[Comment] = field(default_factory=list)
 
 
 @dataclass
